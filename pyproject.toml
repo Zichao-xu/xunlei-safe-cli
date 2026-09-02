@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xunlei-safe-cli"
+version = "0.3.0"
+description = "A unified macOS CLI for local Thunder and Xunlei cloud downloads"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27,<1",
+  "keyring>=25,<27",
+]
+
+[project.scripts]
+xl = "xlcli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Zichao-xu/xunlei-safe-cli"
+Issues = "https://github.com/Zichao-xu/xunlei-safe-cli/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xlcli"]
