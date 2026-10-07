@@ -9,9 +9,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .errors import XLCLIError
+from .models import OfflineTask
 
 THUNDER_APP = Path("/Applications/Thunder.app")
-THUNDER_BUNDLE_ID = "com.xunlei.Thunder"
 LOCAL_SCHEMES = frozenset({"magnet", "ed2k", "thunder", "http", "https"})
 
 
@@ -55,22 +55,13 @@ class LocalThunder:
         if not self.app_path.is_dir():
             raise XLCLIError(f"未找到官方 Mac 迅雷：{self.app_path}")
 
-    def add(self, sources: Sequence[str], background: bool = False) -> list[str]:
+    def add(
+        self, sources: Sequence[str], background: bool = False
+    ) -> list[OfflineTask]:
+        from .native_thunder import NativeThunder
+
         self.ensure_installed()
-        normalized = [normalize_source(source) for source in sources]
-        if not normalized:
-            raise XLCLIError("至少需要一个下载地址或种子文件")
-        command = ["/usr/bin/open"]
-        if background:
-            command.append("-g")
-        command.extend(["-b", THUNDER_BUNDLE_ID, *normalized])
-        result = self.runner(command, check=False, capture_output=True, text=True)
-        if result.returncode != 0:
-            message = (
-                result.stderr or result.stdout or "LaunchServices 调用失败"
-            ).strip()
-            raise XLCLIError(f"无法提交给迅雷：{message}")
-        return normalized
+        return NativeThunder(self.app_path).add(list(sources))
 
     def status(self) -> LocalThunderStatus:
         if not self.app_path.is_dir():

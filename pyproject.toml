@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xunlei-safe-cli"
-version = "0.3.0"
+version = "0.4.0"
 description = "A unified macOS CLI for local Thunder and Xunlei cloud downloads"
 readme = "README.md"
 license = "MIT"

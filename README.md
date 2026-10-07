@@ -1,66 +1,90 @@
 # xl — 本机迅雷与云盘融合 CLI
 
-> 非官方开源项目，与迅雷网络技术有限公司无隶属或背书关系。请仅下载你有权获取的内容，
-> 并遵守所在地法律、服务条款和网络提供商政策。
+非官方开源项目，与迅雷无隶属或背书关系。
 
-`xl` 提供统一入口，后端可以是本机官方迅雷或迅雷云盘。默认 `auto` 优先使用本机
-迅雷，因此无需登录；只有明确选择云盘后端时才需要账号。
-
-本机后端通过 macOS LaunchServices 把磁力链接、ED2K、thunder 链接、普通
-HTTP(S) 地址或 `.torrent` 文件交给 `/Applications/Thunder.app`。它使用的就是
-本机官方迅雷引擎和当前未登录状态，不需要 `xl` 账号，也不会读取或提取迅雷登录信息。
+`xl` 默认直接调用已安装的官方 Mac 迅雷下载内核，在后台创建并启动任务。
+无需无障碍权限，不点击按钮、不切换窗口、不模拟键盘，也不读取客户端登录信息。
+它使用迅雷自带的 `DownloadService.xpc`，没有接入 aria2 或其他下载引擎。
 
 ```bash
-# 两种写法等价，不需要登录
-xl 'magnet:?xt=urn:btih:...'
-xl add 'ed2k://...'
+# 立即启动后台下载，终端退出后继续下载
+xl 'https://example.org/file.zip'
+xl add ~/Downloads/example.torrent
+xl add 'magnet:?xt=urn:btih:...'
 
-# 本地种子
-xl ~/Downloads/example.torrent
+# 启动并等待完成；output 是目录，会创建独立下载子目录
+xl get 'https://example.org/file.zip' ~/Downloads --timeout 3600
 
-# 提交任务但不把迅雷切到前台
-xl add --background 'magnet:?xt=urn:btih:...'
-
-# 查看官方客户端版本及进程状态
+# 查询 xl 创建的任务；复制任务编号等待完成
+xl tasks
+xl wait 'xl-0123456789ab:1'
 xl status
 ```
 
-这种模式的下载行为和速度就是本机官方迅雷当前能提供的效果。`xl` 只负责提交任务；
-进度、暂停、文件选择和保存目录仍由迅雷客户端管理。
+本机任务默认保存到 `~/Downloads/xl/日期-批次/序号/`。每次提交使用独立目录，
+避免覆盖已有文件；种子默认下载全部文件。`--background` 保留为兼容参数，本机模式始终后台运行。
+`get` 只有完成后返回成功；失败、等待超时均返回非零状态。等待超时或中断终端等待，后台下载继续。
 
-## 融合后端
+## 原生后台如何工作
 
-相同的 `add` 和 `get` 命令可以通过 `--engine` 选择后端：
+首次使用时，从 `/Applications/Thunder.app` **在本机复制**官方原生下载服务，
+编译本项目的 Foundation/XPC 调用程序，组成 `LSBackgroundOnly` 后台程序。
+服务仍保留原始签名。GitHub 和 Python 安装包不包含或分发迅雷二进制文件。
+
+配置、任务数据库和下载目录与迅雷主程序隔离。后台任务不出现在迅雷主界面，
+用 `xl tasks` 查询；主程序现有任务和设置不参与这条链路。每批任务完成或失败后，
+后台程序退出。任务记录保存在 `~/Library/Application Support/xlcli/native/`，
+包含源地址和文件路径，目录仅当前用户可访问。
+
+接口属于迅雷私有协议，当前只接受已验证的迅雷 **5.80.0**、下载服务 **8.705.460**、
+内核 `11.0114.460.24 - 11.0114.24r`。版本不匹配会明确失败，
+不会自动弹出主界面、调用无障碍或换成其他引擎。
+
+## 实测范围和边界
+
+2026-10-07，在 macOS 的真实官方内核上验收全部 6 类入口：
+
+| 入口 | 结果 |
+| --- | --- |
+| HTTP | 完成下载，文件内容一致 |
+| HTTPS | 完成下载，文件内容一致 |
+| thunder 链接 | 解码后由原生内核完成下载，内容一致 |
+| 本地 .torrent | 本地 tracker/peer 提供数据，原生内核完成文件下载，内容一致 |
+| magnet | 已创建原生种子获取任务；自建测试资源未取得元数据，端到端完成尚未验证 |
+| ED2K | 原生任务已创建，但测试下载被内核报错；完成下载尚未验证 |
+
+磁力任务取得种子后会自动创建 BT 文件下载；取得种子本身不会被报告为文件下载完成。
+磁力衔接尚需可用资源进行完整实测。独立内核没有复用客户端登录或会员凭据，
+不保证会员专有加速。ED2K 的当前内核可用性仍待验证。
+
+当前不提供暂停、重启续传或系统开机自启。电脑重启、下载服务退出后，
+超过 45 秒没有状态更新的未完成任务会显示“已中断”，需要重新添加。
+本机 `get` 的 output 必须是目录，不支持 `--force` 和 `--connections`。
+
+## 云盘后端
+
+本机和云盘均通过 `--engine auto|local|cloud` 选择。
+`auto` 优先本机；没有本机迅雷时才尝试已经登录的云盘。
+本机版本不兼容或下载失败时不会切换到云盘。
 
 ```bash
-# auto：默认；有本机迅雷就用本机，否则尝试已登录的云盘
-xl add 'magnet:?xt=urn:btih:...' --engine auto
-
-# local：强制交给官方 Mac 迅雷，不需要登录
-xl get 'magnet:?xt=urn:btih:...' --engine local
-
-# cloud：迅雷云盘离线后由 CLI 下载到指定目录，需要先登录
 xl login
 xl get 'magnet:?xt=urn:btih:...' ~/Downloads --engine cloud
+xl tasks --engine cloud
+xl wait '云盘任务编号' --engine cloud
+xl files
+xl download '云盘文件编号' ~/Downloads
+xl logout
 ```
 
-云盘的任务和文件管理也使用普通命令：`xl tasks`、`xl wait`、`xl files`、
-`xl download` 和 `xl logout`。`xl status` 会同时显示两个后端，并说明自动模式会选谁。
+`wait` 的自动模式会按任务编号识别本机和云盘，保留已有云盘等待方式。
+云盘密码只在登录期间存在于内存，令牌保存在 macOS 登录钥匙串；API 限频并限制到
+迅雷官方 HTTPS 域名。云盘分段下载检查 `Content-Range`，默认拒绝覆盖已有文件。
+云盘使用非公开接口，也可能随迅雷更新变化。
 
-## 安全默认值
+## 安装和验证
 
-- 账号密码只在交互登录期间存在于内存，不写入文件。
-- access token 和 refresh token 保存在 macOS 登录钥匙串。
-- 设置文件只保存稳定设备 ID 和非敏感用户名，权限为 `0600`。
-- 登录和云盘 API 只允许访问硬编码的迅雷官方 HTTPS 域名。
-- 不提供删除命令，`get` 下载完成后也不会删除云盘文件。
-- 默认拒绝覆盖本机已有文件；只有显式传入 `--force` 才允许覆盖。
-- API 调用强制限频；下载默认按大小使用 1、2 或最多 4 个连接。
-- 分段下载严格检查 HTTP 206 和 `Content-Range`，完成后再原子改名。
-
-## 安装
-
-要求：macOS、Python 3.11 或更高版本。本机后端需要安装官方 Mac 迅雷。
+要求：macOS、Python 3.11+、官方 Mac 迅雷 5.80.0，以及 Apple 命令行工具（提供 clang）。
 
 ```bash
 git clone https://github.com/Zichao-xu/xunlei-safe-cli.git
@@ -70,26 +94,17 @@ python3 -m venv .venv
 .venv/bin/xl status
 ```
 
-若使用 `pipx`：
+亦可 `pipx install git+https://github.com/Zichao-xu/xunlei-safe-cli.git`。
 
 ```bash
-pipx install git+https://github.com/Zichao-xu/xunlei-safe-cli.git
-xl status
-```
-
-## 已知边界
-
-本机后端等同于用 Finder 或浏览器把任务交给官方迅雷，不是无界面的独立下载内核，
-因此 CLI 暂时不能查询迅雷客户端内部进度。云盘后端使用非公开接口，可能随迅雷更新而变化。
-
-## 开发
-
-```bash
-python3 -m venv .venv
 .venv/bin/pip install -e . ruff
 .venv/bin/ruff format --check src tests
 .venv/bin/ruff check src tests
 .venv/bin/python -m unittest discover -s tests -v
+xcrun clang -fobjc-arc -Wall -Werror -framework Foundation src/xlcli/native/host.m -o /tmp/xl-native-host
+# 已安装兼容迅雷的 Mac：真实后台 HTTP 下载与内容校验
+.venv/bin/python tools/check_native.py
 ```
 
+CI 覆盖 Python 回归测试和原生调用程序编译；CI 没有安装迅雷，不能代替原生下载验收。
 项目使用 [MIT License](LICENSE)。安全问题请参阅 [SECURITY.md](SECURITY.md)。

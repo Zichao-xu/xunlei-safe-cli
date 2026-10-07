@@ -3,12 +3,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from xlcli.cli import _select_engine, run
+from xlcli.models import OfflineTask
 
 
 class CLITests(unittest.TestCase):
     def test_bare_magnet_uses_local_thunder_without_constructing_cloud_auth(self):
         local = Mock()
-        local.add.return_value = ["magnet:?xt=urn:btih:abc"]
+        local.add.return_value = [
+            OfflineTask("xl-123456789abc:1", "sample", "获取种子", 0)
+        ]
         with (
             patch("xlcli.cli.LocalThunder", return_value=local),
             patch(
@@ -44,6 +47,46 @@ class CLITests(unittest.TestCase):
         with patch("xlcli.cli.LocalThunder") as local:
             self.assertEqual(_select_engine("cloud"), "cloud")
         local.assert_not_called()
+
+    def test_local_get_waits_for_completion_without_cloud_auth(self):
+        native = Mock()
+        task = OfflineTask("xl-123456789abc:1", "file", "下载中", 0)
+        native.add.return_value = [task]
+        native.wait.return_value = OfflineTask(task.id, task.name, "已完成", 1)
+        with (
+            patch("xlcli.cli._select_engine", return_value="local"),
+            patch("xlcli.cli.NativeThunder", return_value=native),
+            patch("xlcli.cli.Auth", side_effect=AssertionError("no cloud auth")),
+        ):
+            self.assertEqual(
+                run(["get", "https://example.org/file", "--timeout", "12"]), 0
+            )
+        native.wait.assert_called_once_with(task.id, 12)
+
+    def test_local_get_failure_has_nonzero_exit_status(self):
+        native = Mock()
+        task = OfflineTask("xl-123456789abc:1", "file", "下载中", 0)
+        native.add.return_value = [task]
+        native.wait.return_value = OfflineTask(
+            task.id, task.name, "失败", 0, message="下载失败"
+        )
+        with (
+            patch("xlcli.cli._select_engine", return_value="local"),
+            patch("xlcli.cli.NativeThunder", return_value=native),
+        ):
+            self.assertEqual(run(["get", "https://example.org/file"]), 2)
+
+    def test_wait_auto_preserves_cloud_task_routing(self):
+        api = Mock()
+        api.wait_task.return_value = OfflineTask("cloud-task", "file", "已完成", 1)
+        with (
+            patch("xlcli.cli.Auth"),
+            patch("xlcli.cli.DriveAPI", return_value=api),
+            patch("xlcli.cli.NativeThunder") as native,
+        ):
+            self.assertEqual(run(["wait", "cloud-task"]), 0)
+        api.wait_task.assert_called_once_with("cloud-task", 3600)
+        native.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from .auth import Auth
 from .downloader import Downloader
 from .errors import VerificationRequired, XLCLIError
 from .local_thunder import LocalThunder
+from .native_thunder import NativeThunder
 from .storage import TokenStore
 
 ENGINES = ("auto", "local", "cloud")
@@ -37,13 +38,17 @@ def parser() -> argparse.ArgumentParser:
     add = sub.add_parser("add", help="添加下载；默认使用本机迅雷，无需登录")
     add.add_argument("sources", nargs="+", help="链接或 .torrent 文件")
     add.add_argument("--engine", choices=ENGINES, default="auto")
-    add.add_argument("--background", action="store_true", help="本地模式不切到前台")
+    add.add_argument(
+        "--background", action="store_true", help="兼容参数：本机模式始终在后台运行"
+    )
 
     get = sub.add_parser("get", help="下载链接；可选择本机或云盘后端")
     get.add_argument("url")
     get.add_argument("output", nargs="?", type=Path)
     get.add_argument("--engine", choices=ENGINES, default="auto")
-    get.add_argument("--background", action="store_true", help="本地模式不切到前台")
+    get.add_argument(
+        "--background", action="store_true", help="兼容参数：本机模式始终在后台运行"
+    )
     get.add_argument("--timeout", type=int, default=3600)
     get.add_argument(
         "--connections", type=int, choices=range(1, 5), default=0, metavar="1-4"
@@ -59,12 +64,14 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("logout", help="删除云盘令牌；不影响本机迅雷")
     sub.add_parser("status", help="查看本机迅雷和云盘凭据状态")
 
-    tasks = sub.add_parser("tasks", help="列出云盘离线任务（需登录）")
+    tasks = sub.add_parser("tasks", help="查看下载任务；默认本机迅雷")
     tasks.add_argument("--limit", type=int, default=20)
+    tasks.add_argument("--engine", choices=ENGINES, default="auto")
 
-    wait = sub.add_parser("wait", help="等待云盘离线任务（需登录）")
+    wait = sub.add_parser("wait", help="等待下载完成")
     wait.add_argument("task_id")
     wait.add_argument("--timeout", type=int, default=3600)
+    wait.add_argument("--engine", choices=ENGINES, default="auto")
 
     ls = sub.add_parser("files", help="列出迅雷云盘文件（需登录）")
     ls.add_argument("parent_id", nargs="?", default="")
@@ -115,7 +122,7 @@ def _login(auth: Auth, args: argparse.Namespace) -> None:
 def _print_task(task) -> None:
     progress = task.progress * 100 if task.progress <= 1 else task.progress
     suffix = f" · {task.message}" if task.message else ""
-    print(f"{task.id}\t{task.status}\t{progress:.0f}%\t{task.name}{suffix}")
+    print(f"{task.id}\t{task.status}\t{progress:.0f}%\t{task.name}{suffix}", flush=True)
 
 
 def _progress_printer():
@@ -177,8 +184,9 @@ def run(argv: list[str] | None = None) -> int:
             engine = _select_engine(args.engine)
             if engine == "local":
                 submitted = LocalThunder().add(args.sources, args.background)
-                print(f"已交给本机迅雷：{len(submitted)} 个任务（无需登录）")
-                return 0
+                for task in submitted:
+                    _print_task(task)
+                return 2 if any(task.status == "失败" for task in submitted) else 0
             if args.background:
                 raise XLCLIError("--background 只适用于本机迅雷后端")
             auth = Auth()
@@ -190,13 +198,18 @@ def run(argv: list[str] | None = None) -> int:
         if args.command == "get":
             engine = _select_engine(args.engine)
             if engine == "local":
-                if args.output is not None:
+                if args.force or args.connections:
                     raise XLCLIError(
-                        "本机迅雷的保存目录由客户端管理，请不要指定 output"
+                        "本机迅雷自动管理连接；本机模式不支持 --force 或 --connections"
                     )
-                LocalThunder().add([args.url], args.background)
-                print("已交给本机迅雷（无需登录）")
-                return 0
+                if args.timeout <= 0:
+                    raise XLCLIError("等待时间必须大于零")
+                native = NativeThunder()
+                task = native.add([args.url], args.output)[0]
+                _print_task(task)
+                task = native.wait(task.id, args.timeout)
+                _print_task(task)
+                return 0 if task.status == "已完成" else 2
             if args.background:
                 raise XLCLIError("--background 只适用于本机迅雷后端")
             auth = Auth()
@@ -226,10 +239,28 @@ def run(argv: list[str] | None = None) -> int:
                 local_state = f"{local.version or '未知版本'} · {'运行中' if local.running else '未运行'}"
             cloud_token = TokenStore().load()
             cloud_state = "已保存登录" if cloud_token is not None else "未登录"
-            print(f"本机迅雷：{local_state}（无需登录）")
+            print(f"本机迅雷：{local_state}（后台内核无需登录）")
+            print("本机任务：xl tasks；后台任务不显示在迅雷主界面")
             print(f"云盘后端：{cloud_state}")
             print("自动选择：" + ("本机迅雷" if local.installed else "云盘后端"))
             return 0
+        if args.command in {"tasks", "wait"}:
+            if args.command == "wait" and args.engine == "auto":
+                engine = "local" if args.task_id.startswith("xl-") else "cloud"
+            else:
+                engine = _select_engine(args.engine)
+            if engine == "local":
+                native = NativeThunder()
+                if args.command == "tasks":
+                    tasks = native.tasks(args.limit)
+                    for task in tasks:
+                        _print_task(task)
+                    if not tasks:
+                        print("暂无 xl 后台任务。")
+                    return 0
+                task = native.wait(args.task_id, args.timeout)
+                _print_task(task)
+                return 0 if task.status == "已完成" else 2
         auth = Auth()
         if args.command == "login":
             _login(auth, args)

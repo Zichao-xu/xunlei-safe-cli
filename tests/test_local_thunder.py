@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from xlcli.errors import XLCLIError
 from xlcli.local_thunder import LocalThunder, normalize_source
@@ -40,20 +41,22 @@ class LocalThunderTests(unittest.TestCase):
             with self.assertRaises(XLCLIError):
                 normalize_source(str(bad))
 
-    def test_add_invokes_official_bundle_through_launchservices(self):
+    def test_add_uses_native_service_without_launchservices(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = Path(tmp) / "Thunder.app"
             app.mkdir()
             runner = Runner()
-            submitted = LocalThunder(app, runner).add(
-                ["magnet:?xt=urn:btih:abc"], background=True
-            )
-            self.assertEqual(submitted, ["magnet:?xt=urn:btih:abc"])
-            command = runner.calls[0][0]
-            self.assertEqual(
-                command[:4], ["/usr/bin/open", "-g", "-b", "com.xunlei.Thunder"]
-            )
-            self.assertEqual(command[4], "magnet:?xt=urn:btih:abc")
+            native = Mock()
+            with patch(
+                "xlcli.native_thunder.NativeThunder", return_value=native
+            ) as factory:
+                submitted = LocalThunder(app, runner).add(
+                    ["https://example.org/a"], background=True
+                )
+            factory.assert_called_once_with(app)
+            native.add.assert_called_once_with(["https://example.org/a"])
+            self.assertEqual(submitted, native.add.return_value)
+            self.assertEqual(runner.calls, [])
 
 
 if __name__ == "__main__":
